@@ -111,6 +111,143 @@ All via environment variables:
 | `PLATO_MATRIX_SERVER` | `http://147.224.38.131:6167` | Fleet Matrix homeserver |
 | `PLATO_MATRIX_ROOM` | `#fleet-ops:147.224.38.131` | Fleet room |
 
+### BYOK — Bring Your Own Keys
+
+Add your API keys to enable the built-in agent spawner:
+
+```bash
+docker run -d \
+  -p 8847:8847 \
+  -v plato-data:/data \
+  -e PLATO_KEY_OPENAI=sk-... \
+  -e PLATO_KEY_ANTHROPIC=sk-ant-... \
+  -e PLATO_KEY_GROQ=gsk_... \
+  -e PLATO_KEY_DEEPSEEK=sk-... \
+  -e PLATO_KEY_MOONSHOT=sk-... \
+  -e PLATO_KEY_OPENROUTER=sk-or-... \
+  -e PLATO_KEY_SILICONFLOW=sk-... \
+  -e PLATO_OLLAMA_URL=http://host.docker.internal:11434/v1 \
+  ghcr.io/superinstance/plato-server
+```
+
+You only need **one** key. Add more for fallback and model variety.
+
+Supported providers:
+
+| Provider | Env Var | Models |
+|----------|---------|--------|
+| OpenAI | `PLATO_KEY_OPENAI` | gpt-4o, gpt-4o-mini, o1, o3 |
+| Anthropic | `PLATO_KEY_ANTHROPIC` | claude-sonnet-4-20250514, claude-3.5-haiku, claude-opus-4 |
+| Groq | `PLATO_KEY_GROQ` | llama-3.3-70b, llama-4-scout, qwen3-32b |
+| DeepSeek | `PLATO_KEY_DEEPSEEK` | deepseek-chat, deepseek-reasoner |
+| Moonshot | `PLATO_KEY_MOONSHOT` | kimi-k2.5 |
+| OpenRouter | `PLATO_KEY_OPENROUTER` | auto-routed to best model |
+| SiliconFlow | `PLATO_KEY_SILICONFLOW` | DeepSeek-V3, Qwen |
+| Ollama (local) | `PLATO_OLLAMA_URL` | llama3, mistral, qwen2, gemma2 |
+
+Check which keys are configured: `GET /keys`
+
+## Agent Spawner
+
+PLATO can spawn its own agents. You describe what you want, it builds the agent.
+
+### Armor Types
+
+Every agent wears "power armor" — a system prompt that shapes its behavior:
+
+| Type | Emoji | Best For |
+|------|-------|----------|
+| Scholar | 📚 | Deep research, synthesis, pattern-finding |
+| Builder | ⚒️ | Code, architecture, implementation |
+| Scout | 🔭 | Exploration, discovery, edge-finding |
+| Critic | 🔍 | Review, quality audit, improvement |
+| Bard | 🎭 | Storytelling, explanation, documentation |
+| Commander | ⚓ | Coordination, orchestration, fleet management |
+| Alchemist | ⚗️ | Optimization, efficiency, performance |
+| Custom | ✨ | Whatever you describe |
+
+### Spawn an Agent
+
+```bash
+# Describe what you want — PLATO picks the armor and model
+curl -X POST http://localhost:8847/spawn \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "research agent for fishing patterns in the Pacific",
+    "room": "fishing-research"
+  }'
+```
+
+PLATO will:
+1. Detect the right armor type (Scholar in this case)
+2. Pick the best available model from your keys
+3. Generate a system prompt with PLATO awareness
+4. Start the agent in your specified room
+5. Return a session ID for continued chat
+
+### Chat with Your Agent
+
+```bash
+curl -X POST http://localhost:8847/agent/{session_id}/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What patterns did you find?"}'
+```
+
+### Force a Specific Armor or Provider
+
+```bash
+curl -X POST http://localhost:8847/spawn \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "build me a REST API for fish tracking",
+    "provider": "groq",
+    "model": "llama-3.3-70b-versatile",
+    "room": "fish-api"
+  }'
+```
+
+### The Custom Armor
+
+If your description doesn't match any built-in type, PLATO builds custom armor:
+
+```bash
+curl -X POST http://localhost:8847/spawn \
+  -d '{"description": "I want an agent that thinks like a salty commercial fisherman and evaluates AI tools for practical deck use"}'
+```
+
+PLATO generates a unique system prompt from your description. The agent becomes what you described.
+
+### Agent Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/armor` | Armor catalog |
+| `GET` | `/keys` | Configured providers |
+| `GET` | `/agents` | Active sessions |
+| `GET` | `/agent/{id}` | Session details |
+| `POST` | `/spawn` | Spawn new agent |
+| `POST` | `/agent/{id}/chat` | Chat with agent |
+| `POST` | `/agent/{id}/submit` | Agent submits tile |
+
+### Local Models with GPU
+
+If you have Ollama running locally with a GPU:
+
+```bash
+# Start Ollama with your model
+ollama run llama3
+
+# Point PLATO at it
+docker run -d \
+  --gpus all \
+  -p 8847:8847 \
+  -v plato-data:/data \
+  -e PLATO_OLLAMA_URL=http://host.docker.internal:11434/v1 \
+  ghcr.io/superinstance/plato-server
+```
+
+Now you have zero-cost inference. Agents run on your hardware, tiles sync to the fleet, everyone benefits.
+
 ## Using with Local AI
 
 PLATO is designed for local agents. Point any chatbot at your PLATO:

@@ -10,7 +10,7 @@ RUN useradd -m -s /bin/bash plato
 RUN mkdir -p /data && chown plato:plato /data
 WORKDIR /app
 
-COPY server.py .
+COPY server.py agent.py .
 COPY start.sh .
 RUN chmod +x start.sh
 

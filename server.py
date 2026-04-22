@@ -286,6 +286,13 @@ db = None
 sync = None
 
 
+from agent import (PROVIDERS, ARMOR_CATALOG, detect_armor, build_custom_prompt,
+                    get_available_providers, pick_model, make_agent_call,
+                    SessionManager)
+
+sessions = SessionManager()
+
+
 class PlatoHandler(BaseHTTPRequestHandler):
     # db and sync are module globals, set in __main__
     def _path(self):
@@ -323,9 +330,16 @@ class PlatoHandler(BaseHTTPRequestHandler):
                     "GET  /room/{name}   — Room tiles",
                     "GET  /tiles/recent  — Recent tiles",
                     "GET  /search?q=X    — Search tiles",
-                    "POST /submit        — Submit tile {domain, question, answer, agent}",
+                    "POST /submit        — Submit tile",
                     "GET  /stats         — Usage stats",
-                    "GET  /sync/status   — Fleet sync status",
+                    "GET  /sync/status   — Fleet sync",
+                    "GET  /armor          — Armor catalog (agent types)",
+                    "GET  /keys           — Configured providers",
+                    "GET  /agent/{id}     — Agent session",
+                    "GET  /agents         — Active sessions",
+                    "POST /spawn          — Spawn agent {description, provider?}",
+                    "POST /agent/{id}/chat — Send message to agent",
+                    "POST /agent/{id}/submit — Agent submits tile",
                 ],
                 "about": "PLATO learns from everyone, improves for everyone. Run your own — connect to the fleet — make all of us smarter.",
             })
@@ -357,6 +371,26 @@ class PlatoHandler(BaseHTTPRequestHandler):
 
         elif path == "/sync/status":
             self._json(sync.status())
+
+        # ── Agent endpoints ──
+        elif path == "/armor":
+            self._json({k: {"name": v["name"], "emoji": v["emoji"], "description": v["description"]}
+                       for k, v in ARMOR_CATALOG.items()})
+
+        elif path == "/keys":
+            self._json(get_available_providers())
+
+        elif path == "/agents":
+            sessions.cleanup()
+            self._json(sessions.list_sessions())
+
+        elif path.startswith("/agent/") and "/chat" not in path and "/submit" not in path:
+            sid = path.split("/agent/")[1]
+            session = sessions.get(sid)
+            if not session:
+                self._json({"error": f"Session {sid} not found"}, 404)
+                return
+            self._json(session.to_dict())
 
         else:
             self._json({"error": f"Not found: {path}"}, 404)
@@ -391,6 +425,125 @@ class PlatoHandler(BaseHTTPRequestHandler):
             elif not enable and sync.running:
                 sync.stop()
             self._json({"sync_enabled": SYNC_ENABLED})
+
+        # ── Agent spawn & chat ──
+        elif path == "/spawn":
+            description = body.get("description", "")
+            preferred = body.get("provider", None)
+            room = body.get("room", "general")
+            model_override = body.get("model", None)
+            temperature = body.get("temperature", 0.7)
+
+            if not description:
+                self._json({"error": "Describe what you want your agent to do. Example: {\"description\": \"research agent for fishing patterns\"}"}, 400)
+                return
+
+            # Detect armor type from description
+            armor_type = detect_armor(description)
+            armor = ARMOR_CATALOG[armor_type]
+
+            # Build system prompt
+            if armor_type == "custom" or armor.get("system_prompt") is None:
+                system_prompt = build_custom_prompt(description)
+            else:
+                system_prompt = armor["system_prompt"]
+
+            # Add PLATO awareness to prompt
+            plato_context = f"""\n\nPLATO Instance: {INSTANCE_ID}\nRoom: {room}\nSubmit tiles: POST /submit {{\"room\": \"{room}\", \"domain\": \"...\", \"question\": \"...\", \"answer\": \"...(20+ chars)\", \"agent\": \"your-name\"}}\nSearch: GET /search?q=...\nRecent tiles: GET /tiles/recent"""
+            system_prompt += plato_context
+
+            # Pick model
+            if model_override:
+                provider_name = preferred or "openrouter"
+                provider_config = PROVIDERS.get(provider_name, {})
+                api_key = os.environ.get(provider_config.get("env", ""), "")
+                provider, model, base_url, key = provider_name, model_override, provider_config.get("base_url", ""), api_key
+            else:
+                provider, model, base_url, key = pick_model(armor_type, preferred)
+
+            if not provider:
+                self._json({"error": "No API keys configured. Set at least one: " + ", ".join(f'{c["env"]} ({name})' for name, c in PROVIDERS.items()),
+                           "hint": "Add keys to your docker run: -e PLATO_KEY_OPENAI=sk-..."}, 400)
+                return
+
+            session = sessions.create(armor_type, provider, model, system_prompt)
+            session.add_message("system", system_prompt)
+
+            # Send initial message
+            first_msg = f"You are in room '{room}'. Description of your mission: {description}. Start by reading recent tiles, then begin your work."
+            result = make_agent_call(provider, base_url, key, model, system_prompt, first_msg, temperature)
+
+            if "error" in result:
+                self._json({"error": result["error"], "session_id": session.id,
+                           "hint": "Check your API key and model name"}, 500)
+                return
+
+            session.add_message("user", first_msg)
+            session.add_message("assistant", result["content"])
+
+            self._json({
+                "session_id": session.id,
+                "armor": armor_type,
+                "armor_name": armor["name"],
+                "armor_emoji": armor["emoji"],
+                "provider": provider,
+                "model": model,
+                "response": result["content"],
+                "usage": result.get("usage", {}),
+                "room": room,
+                "chat": f"POST /agent/{session.id}/chat {{\"message\": \"continue\"}}",
+            })
+
+        elif path.startswith("/agent/") and path.endswith("/chat"):
+            sid = path.split("/agent/")[1].replace("/chat", "")
+            session = sessions.get(sid)
+            if not session:
+                self._json({"error": f"Session {sid} not found"}, 404)
+                return
+            message = body.get("message", "continue")
+            temperature = body.get("temperature", 0.7)
+
+            # Build conversation
+            provider_config = PROVIDERS.get(session.provider, {})
+            api_key = os.environ.get(provider_config.get("env", ""), "")
+            result = make_agent_call(
+                session.provider, provider_config.get("base_url", ""),
+                api_key, session.model, session.system_prompt,
+                message, temperature
+            )
+
+            if "error" in result:
+                self._json({"error": result["error"]}, 500)
+                return
+
+            session.add_message("user", message)
+            session.add_message("assistant", result["content"])
+
+            self._json({
+                "session_id": sid,
+                "response": result["content"],
+                "messages": len(session.history),
+                "usage": result.get("usage", {}),
+            })
+
+        elif path.startswith("/agent/") and path.endswith("/submit"):
+            sid = path.split("/agent/")[1].replace("/submit", "")
+            session = sessions.get(sid)
+            if not session:
+                self._json({"error": f"Session {sid} not found"}, 404)
+                return
+            # Agent submits a tile
+            domain = body.get("domain", "agent-generated")
+            question = body.get("question", "")
+            answer = body.get("answer", "")
+            room = body.get("room", "general")
+            if not question or not answer:
+                self._json({"error": "Fields required: question, answer"}, 400)
+                return
+            result = db.submit_tile(room, domain, question, answer, agent=f"agent:{session.id}")
+            if "error" not in result:
+                session.tiles_submitted += 1
+            self._json(result)
 
         else:
             self._json({"error": f"Not found: {path}"}, 404)
