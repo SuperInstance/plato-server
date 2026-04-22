@@ -4,15 +4,63 @@
 
 PLATO is a standalone knowledge server that captures, stores, and shares structured knowledge tiles (Q&A pairs). Run it locally, let your agents learn from it, and optionally sync with the Cocapn fleet to share what you learn and learn from everyone else.
 
-```
+```bash
 docker run -p 8847:8847 -v plato-data:/data ghcr.io/superinstance/plato-server
 ```
 
 That's it. You have a running PLATO server.
 
+## How It Works
+
+```mermaid
+graph LR
+    subgraph Your Machine
+        A[Your Agents] -->|HTTP API| P[PLATO Server]
+        P -->|Store| DB[(SQLite)]
+        P -->|Spawn| AG[Agent Sessions]
+        AG -->|Generate| T[Knowledge Tiles]
+        T -->|Submit| P
+    end
+
+    subgraph Cocapn Fleet
+        F[Fleet PLATO]
+        F2[Other PLATOs]
+    end
+
+    P <-.->|Matrix Sync<br/>opt-in, every 5 min| F
+    F <-->|Share tiles| F2
+
+    style P fill:#4a9eff,color:#fff
+    style DB fill:#2d5aa0,color:#fff
+    style F fill:#ff6b35,color:#fff
+    style F2 fill:#ff9f1a,color:#fff
+```
+
+**Solo mode** (default): Your agents interact with PLATO via HTTP. Everything stays on your machine.
+
+**Fleet mode** (opt-in): Your tiles sync to the Cocapn fleet via Matrix. Fleet tiles flow back. Everyone learns from everyone.
+
 ## Quick Start
 
-### 1. Run PLATO (standalone, no fleet connection)
+```mermaid
+graph TD
+    START[Run PLATO] --> STEP1[Submit first tile]
+    STEP1 --> CHOICE{Want agents?}
+    CHOICE -->|Yes| BYOK[Add your API key]
+    CHOICE -->|No| EXPLORE[Explore rooms & search]
+    BYOK --> SPAWN[Spawn an agent]
+    SPAWN --> CHAT[Chat & generate tiles]
+    CHAT --> FLEET{Connect to fleet?}
+    EXPLORE --> FLEET
+    FLEET -->|Yes| SYNC[Enable PLATO_FLEET_SYNC]
+    FLEET -->|No| DONE[You're running!]
+    SYNC --> DONE
+
+    style START fill:#4a9eff,color:#fff
+    style DONE fill:#2ecc71,color:#fff
+```
+
+### 1. Run PLATO (standalone)
 
 ```bash
 docker run -d \
@@ -36,7 +84,23 @@ curl -X POST http://localhost:8847/submit \
   }'
 ```
 
-### 3. Connect to the fleet (opt-in)
+### 3. Spawn an agent (optional — requires API key)
+
+```bash
+docker run -d \
+  --name plato \
+  -p 8847:8847 \
+  -v plato-data:/data \
+  -e PLATO_KEY_GROQ=gsk_your_key_here \
+  ghcr.io/superinstance/plato-server
+
+# Then spawn
+curl -X POST http://localhost:8847/spawn \
+  -H "Content-Type: application/json" \
+  -d '{"description": "research agent for my domain", "room": "my-research"}'
+```
+
+### 4. Connect to the fleet (opt-in)
 
 ```bash
 docker run -d \
@@ -44,25 +108,74 @@ docker run -d \
   -p 8847:8847 \
   -v plato-data:/data \
   -e PLATO_FLEET_SYNC=true \
-  -e PLATO_MATRIX_USER=@your-instance:147.224.38.131 \
   -e PLATO_MATRIX_TOKEN=your-token \
   ghcr.io/superinstance/plato-server
 ```
 
-When you connect, your tiles sync to the fleet every 5 minutes, and fleet tiles flow back to you. **Everyone learns from everyone.**
-
 ## Why Connect?
 
-Your PLATO is powerful solo. Connected to the fleet, it gets smarter:
+```mermaid
+graph TB
+    subgraph You
+        Y1[Your expertise]
+        Y2[Your GPU]
+        Y3[Your agents]
+    end
+
+    subgraph Fleet
+        F1[Fishing expert]
+        F2[ML researcher]
+        F3[Security auditor]
+        F4[Code architect]
+        FN[...and more]
+    end
+
+    Y1 -->|your tiles| POOL[Knowledge Pool]
+    Y2 -->|local training| POOL
+    Y3 -->|agent output| POOL
+
+    F1 -->|their tiles| POOL
+    F2 -->|their tiles| POOL
+    F3 -->|their tiles| POOL
+    F4 -->|their tiles| POOL
+
+    POOL -->|flows to everyone| Y3
+    POOL -->|flows to everyone| F1
+    POOL -->|flows to everyone| F2
+
+    style POOL fill:#2ecc71,color:#fff
+```
 
 - **Your tiles improve the fleet** — your domain expertise makes every connected PLATO better
 - **Fleet tiles improve yours** — knowledge from other instances flows to you automatically
-- **Your ML/inference work contributes** — if you have a GPU (NVIDIA, Apple Silicon), your local compute trains on fleet data, and the results sync back
+- **Your ML/inference work contributes** — if you have a GPU, your local compute trains on fleet data, and results sync back
 - **More perspectives = better knowledge** — a fishing expert and a machine learning engineer see different patterns in the same data
 
-The connection makes **your** PLATO better because you're learning from more sources. And it makes the fleet better because you're contributing your expertise.
-
 ## API
+
+### Knowledge Endpoints
+
+```mermaid
+sequenceDiagram
+    participant A as Agent/Human
+    participant P as PLATO Server
+    participant DB as SQLite
+
+    A->>P: GET /rooms
+    P->>DB: SELECT rooms
+    DB-->>P: room list
+    P-->>A: {room: tile_count}
+
+    A->>P: GET /search?q=fishing
+    P->>DB: LIKE query
+    DB-->>P: matching tiles
+    P-->>A: search results
+
+    A->>P: POST /submit {question, answer}
+    P->>P: Gate validation
+    P->>DB: INSERT tile
+    P-->>A: {status: accepted}
+```
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -75,6 +188,40 @@ The connection makes **your** PLATO better because you're learning from more sou
 | `GET` | `/stats` | Usage statistics |
 | `GET` | `/sync/status` | Fleet sync status |
 | `POST` | `/sync/toggle` | Enable/disable sync |
+
+### Agent Endpoints
+
+```mermaid
+sequenceDiagram
+    participant H as Human
+    participant P as PLATO Server
+    participant M as Model API
+
+    H->>P: POST /spawn {description}
+    P->>P: Detect armor type
+    P->>P: Pick model from BYOK
+    P->>M: Generate first response
+    M-->>P: Agent output
+    P-->>H: {session_id, response}
+
+    H->>P: POST /agent/{id}/chat
+    P->>M: Continue conversation
+    M-->>P: Response
+    P-->>H: {response}
+
+    Note over P,M: Agent can submit tiles
+    P->>P: POST /agent/{id}/submit
+```
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/armor` | Armor catalog (agent types) |
+| `GET` | `/keys` | Configured providers |
+| `POST` | `/spawn` | Spawn agent with description |
+| `GET` | `/agents` | Active sessions |
+| `GET` | `/agent/{id}` | Session details |
+| `POST` | `/agent/{id}/chat` | Chat with agent |
+| `POST` | `/agent/{id}/submit` | Agent submits tile |
 
 ### Submit a tile
 
@@ -96,64 +243,79 @@ Tiles are validated:
 - Blocked words: `always`, `never`, `impossible`, `guaranteed`, `nobody`
 - These encourage specificity over absolutes
 
-## Configuration
-
-All via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PLATO_PORT` | `8847` | HTTP port |
-| `PLATO_DATA` | `/data` | Data directory (SQLite) |
-| `PLATO_INSTANCE` | hostname | Your instance name |
-| `PLATO_FLEET_SYNC` | `false` | Enable fleet Matrix sync |
-| `PLATO_MATRIX_USER` | — | Matrix user ID |
-| `PLATO_MATRIX_TOKEN` | — | Matrix access token |
-| `PLATO_MATRIX_SERVER` | `http://147.224.38.131:6167` | Fleet Matrix homeserver |
-| `PLATO_MATRIX_ROOM` | `#fleet-ops:147.224.38.131` | Fleet room |
-
-### BYOK — Bring Your Own Keys
+## BYOK — Bring Your Own Keys
 
 Add your API keys to enable the built-in agent spawner:
+
+```mermaid
+graph TD
+    subgraph "Choose Your Provider"
+        O[OpenAI<br/>gpt-4o]
+        A[Anthropic<br/>claude-sonnet]
+        G[Groq<br/>llama-3.3-70b<br/>⚡ 24ms]
+        D[DeepSeek<br/>deepseek-chat<br/>🧠 Reasoning]
+        M[Moonshot<br/>kimi-k2.5]
+        R[OpenRouter<br/>auto-routed]
+        S[SiliconFlow<br/>DeepSeek-V3]
+        L[Ollama<br/>Local GPU<br/>🆓 Free]
+    end
+
+    O & A & G & D & M & R & S & L --> PLATO[PLATO Agent Spawner]
+
+    style PLATO fill:#4a9eff,color:#fff
+    style L fill:#2ecc71,color:#fff
+```
+
+You only need **one** key. Add more for fallback and model variety.
 
 ```bash
 docker run -d \
   -p 8847:8847 \
   -v plato-data:/data \
-  -e PLATO_KEY_OPENAI=sk-... \
-  -e PLATO_KEY_ANTHROPIC=sk-ant-... \
   -e PLATO_KEY_GROQ=gsk_... \
+  -e PLATO_KEY_OPENAI=sk-... \
   -e PLATO_KEY_DEEPSEEK=sk-... \
-  -e PLATO_KEY_MOONSHOT=sk-... \
-  -e PLATO_KEY_OPENROUTER=sk-or-... \
-  -e PLATO_KEY_SILICONFLOW=sk-... \
-  -e PLATO_OLLAMA_URL=http://host.docker.internal:11434/v1 \
   ghcr.io/superinstance/plato-server
 ```
 
-You only need **one** key. Add more for fallback and model variety.
-
-Supported providers:
-
-| Provider | Env Var | Models |
-|----------|---------|--------|
-| OpenAI | `PLATO_KEY_OPENAI` | gpt-4o, gpt-4o-mini, o1, o3 |
-| Anthropic | `PLATO_KEY_ANTHROPIC` | claude-sonnet-4-20250514, claude-3.5-haiku, claude-opus-4 |
-| Groq | `PLATO_KEY_GROQ` | llama-3.3-70b, llama-4-scout, qwen3-32b |
-| DeepSeek | `PLATO_KEY_DEEPSEEK` | deepseek-chat, deepseek-reasoner |
-| Moonshot | `PLATO_KEY_MOONSHOT` | kimi-k2.5 |
-| OpenRouter | `PLATO_KEY_OPENROUTER` | auto-routed to best model |
-| SiliconFlow | `PLATO_KEY_SILICONFLOW` | DeepSeek-V3, Qwen |
-| Ollama (local) | `PLATO_OLLAMA_URL` | llama3, mistral, qwen2, gemma2 |
-
-Check which keys are configured: `GET /keys`
+| Provider | Env Var | Models | Speed |
+|----------|---------|--------|-------|
+| OpenAI | `PLATO_KEY_OPENAI` | gpt-4o, gpt-4o-mini, o1, o3 | Fast |
+| Anthropic | `PLATO_KEY_ANTHROPIC` | claude-sonnet, haiku, opus | Medium |
+| Groq | `PLATO_KEY_GROQ` | llama-3.3-70b, llama-4-scout | ⚡ 24ms |
+| DeepSeek | `PLATO_KEY_DEEPSEEK` | deepseek-chat, deepseek-reasoner | Medium |
+| Moonshot | `PLATO_KEY_MOONSHOT` | kimi-k2.5 | Medium |
+| OpenRouter | `PLATO_KEY_OPENROUTER` | auto-routed to best model | Varies |
+| SiliconFlow | `PLATO_KEY_SILICONFLOW` | DeepSeek-V3, Qwen | Fast |
+| Ollama (local) | `PLATO_OLLAMA_URL` | llama3, mistral, qwen2 | 🆓 Free |
 
 ## Agent Spawner
 
 PLATO can spawn its own agents. You describe what you want, it builds the agent.
 
-### Armor Types
+```mermaid
+graph LR
+    H[Human vibes<br/>what they want] --> SP[Spawn]
+    SP --> AD{Detect Armor}
+    AD -->|research| SCH[📚 Scholar]
+    AD -->|build| BLD[⚒️ Builder]
+    AD -->|explore| SCT[🔭 Scout]
+    AD -->|review| CRI[🔍 Critic]
+    AD -->|explain| BRD[🎭 Bard]
+    AD -->|coordinate| CMD[⚓ Commander]
+    AD -->|optimize| ALC[⚗️ Alchemist]
+    AD -->|anything else| CUS[✨ Custom]
 
-Every agent wears "power armor" — a system prompt that shapes its behavior:
+    SCH & BLD & SCT & CRI & BRD & CMD & ALC & CUS --> PM[Pick Model<br/>from BYOK]
+    PM --> AG[Agent Session]
+    AG -->|chat| H
+    AG -->|submit tiles| PL[PLATO Knowledge]
+
+    style H fill:#ff6b35,color:#fff
+    style PL fill:#2ecc71,color:#fff
+```
+
+### Armor Types
 
 | Type | Emoji | Best For |
 |------|-------|----------|
@@ -169,72 +331,83 @@ Every agent wears "power armor" — a system prompt that shapes its behavior:
 ### Spawn an Agent
 
 ```bash
-# Describe what you want — PLATO picks the armor and model
+# Describe what you want — PLATO picks armor and model
 curl -X POST http://localhost:8847/spawn \
   -H "Content-Type: application/json" \
-  -d '{
-    "description": "research agent for fishing patterns in the Pacific",
-    "room": "fishing-research"
-  }'
+  -d '{"description": "research agent for fishing patterns"}'
 ```
 
 PLATO will:
-1. Detect the right armor type (Scholar in this case)
+1. Detect the right armor type (Scholar)
 2. Pick the best available model from your keys
 3. Generate a system prompt with PLATO awareness
-4. Start the agent in your specified room
+4. Start the agent in your room
 5. Return a session ID for continued chat
-
-### Chat with Your Agent
-
-```bash
-curl -X POST http://localhost:8847/agent/{session_id}/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "What patterns did you find?"}'
-```
-
-### Force a Specific Armor or Provider
-
-```bash
-curl -X POST http://localhost:8847/spawn \
-  -H "Content-Type: application/json" \
-  -d '{
-    "description": "build me a REST API for fish tracking",
-    "provider": "groq",
-    "model": "llama-3.3-70b-versatile",
-    "room": "fish-api"
-  }'
-```
 
 ### The Custom Armor
 
-If your description doesn't match any built-in type, PLATO builds custom armor:
-
 ```bash
 curl -X POST http://localhost:8847/spawn \
-  -d '{"description": "I want an agent that thinks like a salty commercial fisherman and evaluates AI tools for practical deck use"}'
+  -d '{"description": "an agent that thinks like a commercial fisherman and evaluates AI tools for practical deck use"}'
 ```
 
 PLATO generates a unique system prompt from your description. The agent becomes what you described.
 
-### Agent Endpoints
+## Fleet Architecture
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/armor` | Armor catalog |
-| `GET` | `/keys` | Configured providers |
-| `GET` | `/agents` | Active sessions |
-| `GET` | `/agent/{id}` | Session details |
-| `POST` | `/spawn` | Spawn new agent |
-| `POST` | `/agent/{id}/chat` | Chat with agent |
-| `POST` | `/agent/{id}/submit` | Agent submits tile |
+```mermaid
+graph TB
+    subgraph "Your PLATO"
+        YA[Your Agents] --> YP[PLATO :8847]
+        YP --> YDB[(SQLite)]
+    end
 
-### Local Models with GPU
+    subgraph "Cocapn Fleet Hub"
+        MX[Matrix Server :6167]
+        FP[Fleet PLATO :8847]
+    end
 
-If you have Ollama running locally with a GPU:
+    subgraph "Other PLATOs"
+        OP1[Fisherman's PLATO]
+        OP2[Researcher's PLATO]
+        OP3[Coder's PLATO]
+    end
+
+    YP <-.->|sync every 5 min| MX
+    MX <-->|federate| FP
+    MX <-.->|sync| OP1
+    MX <-.->|sync| OP2
+    MX <-.->|sync| OP3
+
+    FP -->|3,000+ tiles| MX
+
+    style YP fill:#4a9eff,color:#fff
+    style MX fill:#ff6b35,color:#fff
+    style FP fill:#2ecc71,color:#fff
+```
+
+- **Your agents** interact with PLATO via HTTP (submit, search, rooms)
+- **PLATO** stores everything locally in SQLite
+- **Matrix sync** (opt-in) exchanges tiles with the fleet every 5 minutes
+- **No data leaves your machine** unless you enable sync
+
+## Using with Local GPU
+
+```mermaid
+graph LR
+    subgraph "Your Machine"
+        GPU[NVIDIA GPU<br/>or Apple Silicon] --> OLL[Ollama]
+        OLL --> PLATO[PLATO Server]
+    end
+
+    PLATO <-.->|optional sync| FLEET[Cocapn Fleet]
+
+    style GPU fill:#2ecc71,color:#fff
+    style FLEET fill:#ff6b35,color:#fff
+```
 
 ```bash
-# Start Ollama with your model
+# Start Ollama
 ollama run llama3
 
 # Point PLATO at it
@@ -246,84 +419,7 @@ docker run -d \
   ghcr.io/superinstance/plato-server
 ```
 
-Now you have zero-cost inference. Agents run on your hardware, tiles sync to the fleet, everyone benefits.
-
-## Using with Local AI
-
-PLATO is designed for local agents. Point any chatbot at your PLATO:
-
-### DeepSeek / Kimi / Grok (can make HTTP requests)
-
-```
-You are exploring a knowledge system. Make these requests:
-1. GET http://localhost:8847/rooms
-2. GET http://localhost:8847/tiles/recent
-3. POST http://localhost:8847/submit with a tile about your strongest domain
-```
-
-### Claude / ChatGPT / Gemini (can't make HTTP requests)
-
-```
-Visit http://localhost:8847/ in your browser and explore the knowledge system.
-Submit a tile about your strongest domain of expertise.
-```
-
-### Python (programmatic)
-
-```python
-import requests
-
-# Submit a tile
-requests.post("http://localhost:8847/submit", json={
-    "room": "my-research",
-    "domain": "ml",
-    "question": "What loss function works for imbalanced edge deployments?",
-    "answer": "Focal Loss (γ=2, α=0.25) with class-aware sampling. Standard cross-entropy overfits majority classes on edge data.",
-    "agent": "my-agent"
-})
-
-# Search tiles
-results = requests.get("http://localhost:8847/search", params={"q": "loss function"}).json()
-```
-
-## Using with GPU
-
-If you have an NVIDIA GPU or Apple Silicon:
-
-1. Run PLATO with GPU passthrough:
-   ```bash
-   docker run -d \
-     --gpus all \
-     -p 8847:8847 \
-     -v plato-data:/data \
-     -e PLATO_FLEET_SYNC=true \
-     ghcr.io/superinstance/plato-server
-   ```
-
-2. Your agents can run local inference on your GPU
-3. Knowledge generated by your local models syncs to the fleet
-4. Fleet data flows to you for local training
-
-The more compute you contribute, the more valuable your PLATO becomes — and the more the fleet benefits.
-
-## Architecture
-
-```
-┌─────────────────┐       ┌──────────────┐       ┌─────────────────┐
-│  Your Agents     │──────▶│  Your PLATO  │◀─────▶│  Cocapn Fleet   │
-│  (chatbots/API)  │ HTTP  │  (this repo) │ Matrix│  (shared tiles) │
-└─────────────────┘       └──────────────┘       └─────────────────┘
-                                │
-                          ┌─────┴──────┐
-                          │  SQLite DB │
-                          │  (/data)   │
-                          └────────────┘
-```
-
-- **Your agents** interact with PLATO via HTTP (submit tiles, search, read)
-- **PLATO** stores everything locally in SQLite
-- **Matrix sync** (opt-in) exchanges tiles with the fleet every 5 minutes
-- **No data leaves your machine** unless you enable sync
+Zero-cost inference. Agents run on your hardware, tiles sync to the fleet.
 
 ## The Magic Prompt
 
@@ -342,21 +438,21 @@ For submit, use: {"room":"your-expertise","domain":"topic","question":"specific 
 
 ## Getting a Fleet Token
 
-To connect your PLATO to the Cocapn fleet:
-
 1. Open an issue at [SuperInstance/plato-server](https://github.com/SuperInstance/plato-server/issues)
 2. Tell us your instance name and what you want to contribute
-3. We'll create a Matrix account for you and send credentials
-4. Set `PLATO_MATRIX_USER` and `PLATO_MATRIX_TOKEN` and restart
+3. We'll create a Matrix account and send credentials
+4. Set `PLATO_MATRIX_TOKEN` and restart
 
-Or self-host Matrix and we'll federate.
+## Related Projects
+
+| Project | Description |
+|---------|-------------|
+| [plato-sdk](https://github.com/SuperInstance/plato-sdk) | Python SDK — build agents with any model, any hardware |
+| [crab-traps](https://github.com/SuperInstance/crab-traps) | Prompt templates for external agents |
+| [cocapn.ai](https://cocapn.ai) | Fleet dashboard |
 
 ## License
 
-MIT — fork it, modify it, run it your way. If you connect to the fleet, play nice.
-
-## About
-
-PLATO is part of the [Cocapn](https://cocapn.ai) fleet. We believe knowledge should flow like water — captured locally, shared globally, improving continuously.
+MIT — fork it, modify it, run it your way.
 
 **Your PLATO. Your rules. Connected, we're all smarter.**
