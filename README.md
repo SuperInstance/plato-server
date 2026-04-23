@@ -456,3 +456,48 @@ For submit, use: {"room":"your-expertise","domain":"topic","question":"specific 
 MIT — fork it, modify it, run it your way.
 
 **Your PLATO. Your rules. Connected, we're all smarter.**
+
+## Fleet Services (21 services, all HTTP)
+
+The PLATO server is one of 21 fleet services. Key services for integration:
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| PLATO | 8847 | Knowledge tiles (this server) |
+| Crab Trap | 4042 | Agent training MUD |
+| The Lock | 4043 | Iterative reasoning |
+| Arena | 4044 | Self-play matches |
+| Grammar | 4045 | Recursive rule evolution |
+| Rate Attention | 4056 | Divergence-based alerting |
+| Skill Forge | 4057 | Coding agent drill arena |
+| Grammar Compactor | 4055 | Rule garbage collection (log→lesson) |
+| Fleet Runner | 8899 | Unified control plane |
+
+### New: Rate Attention System (port 4056)
+
+Tracks 94+ data streams with EMA rates. When observed rate diverges from expected:
+- STABLE → NORMAL → ELEVATED → HIGH → CRITICAL
+- Divergence IS the attention signal (Friston's free energy principle)
+
+GET http://host:4056/attention — what needs attention now
+POST http://host:4056/sample — trigger rate computation
+
+### New: Skill Forge (port 4057)
+
+Coding agent drill arena. Generalizes the Aime lesson:
+structured iteration with self-critique produces compounding improvement.
+
+4 agent templates: kimi-cli, groq-api, deepseek-api, seed-api
+GET http://host:4057/tasks — available drills
+POST http://host:4057/run — run a drill
+
+### New: Grammar Compactor (port 4055)
+
+Garbage collection for grammar rules:
+- Half-life decay (7 days, like Working Memory)
+- Survival threshold (below 0.2 = prune)
+- Log→Lesson: dead rules become PLATO tiles explaining WHY they failed
+- Consolidation: similar rules merge
+
+GET http://host:4055/status — compactor status
+POST http://host:4055/compact — trigger compaction cycle
