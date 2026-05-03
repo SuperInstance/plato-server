@@ -501,3 +501,12 @@ Garbage collection for grammar rules:
 
 GET http://host:4055/status — compactor status
 POST http://host:4055/compact — trigger compaction cycle
+
+## Fleet Context
+Part of the Cocapn fleet. Related repos:
+- [plato-sdk](https://github.com/SuperInstance/plato-sdk) — Python SDK for building PLATO-connected agents
+- [open-agents](https://github.com/SuperInstance/open-agents) — Agent runtime with PLATO reasoning and fleet tools
+- [lighthouse-monitor](https://github.com/SuperInstance/lighthouse-monitor) — Fleet monitoring that watches the PLATO server
+
+---
+🦐 Cocapn fleet — lighthouse keeper architecture
