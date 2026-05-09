@@ -1,5 +1,15 @@
 # PLATO Server — Knowledge System
 
+
+## Meta
+
+**Domain:** core-infrastructure
+**Depends on:** python3, flask
+**Depended by:** keel, cocapn-ai-web, fleet-spread, crab-traps
+**Implements:** room-protocol, tile-storage, plato-api
+**Related:** keel, plato-client-js, plato-client-ruby
+
+
 **Your own knowledge system. Connect to the fleet. Make everyone smarter.**
 
 PLATO is a standalone knowledge server that captures, stores, and shares structured knowledge tiles (Q&A pairs). Run it locally, let your agents learn from it, and optionally sync with the Cocapn fleet to share what you learn and learn from everyone else.
