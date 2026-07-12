@@ -32,6 +32,7 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import socket
+import re
 
 def socket_hostname():
     return socket.gethostname()
@@ -56,8 +57,8 @@ if not PLATO_API_KEY:
     )
 
 # Fleet Matrix config (opt-in)
-FLEET_MATRIX_HOMESERVER = os.environ.get("FLEET_MATRIX_SERVER", "http://147.224.38.131:6167")
-FLEET_MATRIX_ROOM = os.environ.get("FLEET_MATRIX_ROOM", "#fleet-ops:147.224.38.131")
+FLEET_MATRIX_HOMESERVER = os.environ.get("FLEET_MATRIX_SERVER", "http://localhost:6167")
+FLEET_MATRIX_ROOM = os.environ.get("FLEET_MATRIX_ROOM", "#fleet-ops:localhost")
 FLEET_MATRIX_USER = os.environ.get("PLATO_MATRIX_USER", "")
 FLEET_MATRIX_TOKEN = os.environ.get("PLATO_MATRIX_TOKEN", "")
 SYNC_ENABLED = os.environ.get("PLATO_FLEET_SYNC", "false").lower() == "true"
@@ -333,7 +334,6 @@ class PlatoHandler(BaseHTTPRequestHandler):
     def _unauthorized(self):
         self.send_response(401)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(json.dumps({"error": "Unauthorized — provide Authorization: Bearer <PLATO_API_KEY>"}).encode())
 
@@ -343,15 +343,24 @@ class PlatoHandler(BaseHTTPRequestHandler):
     def _params(self):
         return {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
 
+    def _cors_origin(self):
+        """Return configured CORS origin (empty = no CORS header sent)."""
+        return os.environ.get("PLATO_CORS_ORIGIN", "")
+
     def _json(self, data, code=200):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(json.dumps(data, indent=2, default=str).encode())
 
     def _body(self):
         length = int(self.headers.get("Content-Length", 0))
+        if length > 1_048_576:  # 1 MB max
+            raise ValueError("Request body too large (max 1MB)")
         return json.loads(self.rfile.read(length)) if length else {}
 
     def do_GET(self):
@@ -398,7 +407,11 @@ class PlatoHandler(BaseHTTPRequestHandler):
             self._json(db.get_rooms())
 
         elif path.startswith("/room/"):
-            room = path.split("/room/")[1]
+            room = path.split("/room/", 1)[1]
+            # Sanitize room name: alphanumeric, dash, underscore, dot only
+            if not room or not re.match(r'^[A-Za-z0-9._-]+$', room):
+                self._json({"error": "Invalid room name"}, 400)
+                return
             tiles = db.get_room(room)
             if not tiles:
                 self._json({"room": room, "tiles": [], "message": "Empty room — submit the first tile!"})
@@ -604,9 +617,12 @@ class PlatoHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
 
     def log_message(self, format, *args):
