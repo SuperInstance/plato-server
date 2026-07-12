@@ -4,7 +4,7 @@
 ## Meta
 
 **Domain:** core-infrastructure
-**Depends on:** python3, flask
+**Depends on:** python3 (stdlib only)
 **Depended by:** keel, cocapn-ai-web, fleet-spread, crab-traps
 **Implements:** room-protocol, tile-storage, plato-api
 **Related:** keel, plato-client-js, plato-client-ruby

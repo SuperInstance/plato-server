@@ -560,7 +560,9 @@ class PlatoHandler(BaseHTTPRequestHandler):
 
 
 # ── Main ────────────────────────────────────────────────────
-if __name__ == "__main__":
+def main():
+    """Entry point for plato-server."""
+    global db, sync
     db = PlatoDB()
     sync = MatrixSync(db)
     print(f"╔══════════════════════════════════════════╗")
@@ -582,3 +584,7 @@ if __name__ == "__main__":
     print(f"  Ready. Submit knowledge: POST /submit")
     print(f"  Connect to fleet: set PLATO_FLEET_SYNC=true")
     server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

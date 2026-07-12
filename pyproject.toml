@@ -5,11 +5,30 @@ build-backend = "hatchling.build"
 [project]
 name = "plato-server"
 version = "1.0.0"
-description = "Cocapn Fleet module — plato-server"
+description = "Standalone knowledge system — SQLite-backed HTTP server for room-based Q&A tile management with optional Matrix fleet sync."
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
-keywords = ["cocapn", "fleet"]
+license = "MIT"
+keywords = ["plato", "knowledge", "fleet", "cocapn", "tiles", "matrix"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
 
 [project.scripts]
-plato_server = "test_server:main"
+plato-server = "server:main"
+
+[project.urls]
+Homepage = "https://github.com/SuperInstance/plato-server"
+Repository = "https://github.com/SuperInstance/plato-server"
+Issues = "https://github.com/SuperInstance/plato-server/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]

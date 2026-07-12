@@ -2,12 +2,12 @@ name: Python CI
 
 on:
   push:
-    branches: [ '*' ]
+    branches: ['*']
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 jobs:
-  build-and-test:
+  lint-and-test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -22,13 +22,10 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install flake8 pytest
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        if [ -f setup.py ]; then pip install -e .; fi
         if [ -f pyproject.toml ]; then pip install -e .; fi
     - name: Lint with flake8
       run: |
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     - name: Test with pytest
       run: |
-        python -m pytest --import-mode=importlib -x -v || true
+        python -m pytest --import-mode=importlib -x -v
