@@ -42,6 +42,19 @@ DATA_DIR = Path(os.environ.get("PLATO_DATA", "/data"))
 DB_PATH = DATA_DIR / "plato.db"
 INSTANCE_ID = os.environ.get("PLATO_INSTANCE", socket_hostname())
 
+# Auth
+PLATO_API_KEY = os.environ.get("PLATO_API_KEY", "")
+AUTH_PREFIX = "Bearer "  # Authorization: Bearer <key>
+AUTH_EXEMPT_PATHS = {"/health"}
+
+if not PLATO_API_KEY:
+    import logging
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger(__name__).warning(
+        "PLATO_API_KEY is not set — server will REQUIRE it but all requests "
+        "without it will be rejected. Set PLATO_API_KEY to allow access."
+    )
+
 # Fleet Matrix config (opt-in)
 FLEET_MATRIX_HOMESERVER = os.environ.get("FLEET_MATRIX_SERVER", "http://147.224.38.131:6167")
 FLEET_MATRIX_ROOM = os.environ.get("FLEET_MATRIX_ROOM", "#fleet-ops:147.224.38.131")
@@ -126,38 +139,43 @@ class PlatoDB:
         }
 
     def get_rooms(self):
-        rows = self.conn.execute(
-            "SELECT room, COUNT(*) as tile_count, MAX(created_at) as latest FROM tiles GROUP BY room ORDER BY tile_count DESC"
-        ).fetchall()
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT room, COUNT(*) as tile_count, MAX(created_at) as latest FROM tiles GROUP BY room ORDER BY tile_count DESC"
+            ).fetchall()
         return {r["room"]: {"tile_count": r["tile_count"], "latest": r["latest"]} for r in rows}
 
     def get_room(self, name, limit=50):
-        tiles = self.conn.execute(
-            "SELECT * FROM tiles WHERE room=? ORDER BY created_at DESC LIMIT ?",
-            (name, limit)
-        ).fetchall()
+        with self.lock:
+            tiles = self.conn.execute(
+                "SELECT * FROM tiles WHERE room=? ORDER BY created_at DESC LIMIT ?",
+                (name, limit)
+            ).fetchall()
         return [dict(t) for t in tiles]
 
     def get_recent(self, limit=50):
-        tiles = self.conn.execute(
-            "SELECT * FROM tiles ORDER BY created_at DESC LIMIT ?", (limit,)
-        ).fetchall()
+        with self.lock:
+            tiles = self.conn.execute(
+                "SELECT * FROM tiles ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
         return [dict(t) for t in tiles]
 
     def search(self, query, limit=20):
-        tiles = self.conn.execute(
-            "SELECT * FROM tiles WHERE question LIKE ? OR answer LIKE ? OR domain LIKE ? ORDER BY created_at DESC LIMIT ?",
-            (f"%{query}%", f"%{query}%", f"%{query}%", limit)
-        ).fetchall()
+        with self.lock:
+            tiles = self.conn.execute(
+                "SELECT * FROM tiles WHERE question LIKE ? OR answer LIKE ? OR domain LIKE ? ORDER BY created_at DESC LIMIT ?",
+                (f"%{query}%", f"%{query}%", f"%{query}%", limit)
+            ).fetchall()
         return [dict(t) for t in tiles]
 
     def get_stats(self):
-        total = self.conn.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
-        rooms = self.conn.execute("SELECT COUNT(DISTINCT room) FROM tiles").fetchone()[0]
-        agents = self.conn.execute("SELECT COUNT(DISTINCT agent) FROM tiles").fetchone()[0]
-        recent_24h = self.conn.execute(
-            "SELECT COUNT(*) FROM tiles WHERE created_at > ?", (time.time() - 86400,)
-        ).fetchone()[0]
+        with self.lock:
+            total = self.conn.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
+            rooms = self.conn.execute("SELECT COUNT(DISTINCT room) FROM tiles").fetchone()[0]
+            agents = self.conn.execute("SELECT COUNT(DISTINCT agent) FROM tiles").fetchone()[0]
+            recent_24h = self.conn.execute(
+                "SELECT COUNT(*) FROM tiles WHERE created_at > ?", (time.time() - 86400,)
+            ).fetchone()[0]
         return {
             "instance": INSTANCE_ID,
             "total_tiles": total,
@@ -169,7 +187,8 @@ class PlatoDB:
         }
 
     def tile_count(self):
-        return self.conn.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
+        with self.lock:
+            return self.conn.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
 
 
 # ── Matrix Sync (optional) ─────────────────────────────────
@@ -202,10 +221,11 @@ class MatrixSync:
                 since = self.db.conn.execute(
                     "SELECT COALESCE(MAX(created_at), 0) FROM sync_log WHERE direction='send'"
                 ).fetchone()[0]
-                new_tiles = self.db.conn.execute(
-                    "SELECT * FROM tiles WHERE created_at > ? ORDER BY created_at ASC LIMIT 50",
-                    (since,)
-                ).fetchall()
+                with self.db.lock:
+                    new_tiles = self.db.conn.execute(
+                        "SELECT * FROM tiles WHERE created_at > ? ORDER BY created_at ASC LIMIT 50",
+                        (since,)
+                    ).fetchall()
 
                 if new_tiles:
                     payload = {
@@ -295,6 +315,28 @@ sessions = SessionManager()
 
 class PlatoHandler(BaseHTTPRequestHandler):
     # db and sync are module globals, set in __main__
+
+    def _check_auth(self):
+        """Return True if request is authorized, False otherwise."""
+        path = self._path()
+        # Health endpoint is always public
+        if path in AUTH_EXEMPT_PATHS:
+            return True
+        # Require Bearer token
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith(AUTH_PREFIX):
+            token = auth_header[len(AUTH_PREFIX):]
+            if token and token == PLATO_API_KEY:
+                return True
+        return False
+
+    def _unauthorized(self):
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": "Unauthorized — provide Authorization: Bearer <PLATO_API_KEY>"}).encode())
+
     def _path(self):
         return urlparse(self.path).path.rstrip("/")
 
@@ -315,6 +357,14 @@ class PlatoHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self._path()
         params = self._params()
+
+        if not self._check_auth():
+            self._unauthorized()
+            return
+
+        if path == "/health":
+            self._json({"status": "ok", "instance": INSTANCE_ID, "tiles": db.tile_count()})
+            return
 
         if path == "" or path == "/":
             self._json({
@@ -398,6 +448,10 @@ class PlatoHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self._path()
         body = self._body()
+
+        if not self._check_auth():
+            self._unauthorized()
+            return
 
         if path == "/submit":
             domain = body.get("domain", "general")
@@ -570,6 +624,7 @@ def main():
     print(f"║  Instance: {INSTANCE_ID:<30s}║")
     print(f"║  Database: {str(DB_PATH):<30s}║")
     print(f"║  Fleet sync: {'ON' if SYNC_ENABLED else 'OFF':<29s}║")
+    print(f"║  Auth: {'ON' if PLATO_API_KEY else 'REQUIRED (no key set!)':<30s}║")
     print(f"╚══════════════════════════════════════════╝")
 
     if SYNC_ENABLED:
